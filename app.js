@@ -3373,9 +3373,8 @@ class FinanceApp {
 
       // Atualizar todas as views
       await this.refreshCache();
-      await this.loadDashboardData();
+      await this.updateDashboard(); // Isso já chama loadDashboardData() e updateCharts()
       await this.loadTransactions();
-      await this.updateCharts();
 
       // Atualizar notificações
       await this.updateNotificationBadge();
@@ -3399,6 +3398,11 @@ class FinanceApp {
         console.log("🔓 Lock de transação liberado");
       }, 1000);
     }
+
+        // No final do método saveTransaction(), adicione:
+    setTimeout(() => {
+        this.updateCharts();
+    }, 500); // Pequeno delay para garantir que o DOM está atualizado
   }
 
   async saveInvestment() {
@@ -3872,20 +3876,35 @@ class FinanceApp {
     await this.loadLimits();
   }
 
-  updateCharts() {
-    // Destruir gráficos existentes
-    Object.values(this.charts).forEach((chart) => {
-      if (chart && typeof chart.destroy === "function") {
-        chart.destroy();
-      }
-    });
+   updateCharts() {
 
-    this.charts = {};
+      
+      const chartIds = [
+          'income-expense-chart',
+          'pie-chart', 
+          'bar-chart',
+          'trend-chart'
+      ];
+      
+      chartIds.forEach(id => {
+          if (!document.getElementById(id)) {
+              console.warn(`Elemento do gráfico ${id} não encontrado`);
+              return;
+          }
+      });
+      
+      // Destruir gráficos existentes
+      Object.values(this.charts).forEach((chart) => {
+          if (chart && typeof chart.destroy === "function") {
+              chart.destroy();
+          }
+      });
 
-    // Carregar dados para os gráficos (com filtros do dashboard)
-    this.loadChartData();
+      this.charts = {};
+
+      // Carregar dados para os gráficos
+      this.loadChartData();
   }
-
   async loadChartData() {
     try {
       const transactions = await this.getCachedTransactions();
