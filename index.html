@@ -3,15 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Finanças Pro | Controle Financeiro Pessoal</title>
+    <title>Finanças Pro | Controle Financeiro Pessoal v4.0</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.3.0/dist/chart.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
 </head>
 <body>
     <div class="container">
@@ -22,7 +23,7 @@
         <aside class="sidebar" id="sidebar">
             <div class="logo">
                 <i class="fas fa-chart-line"></i>
-                <h1>Finanças<span>Pro</span></h1>
+                <h1>Finanças<span>Pro</span> <span class="version-badge">v4.0</span></h1>
                 <button class="close-sidebar" id="close-sidebar">
                     <i class="fas fa-times"></i>
                 </button>
@@ -93,6 +94,10 @@
                     <h2 id="page-title">Dashboard</h2>
                 </div>
                 <div class="header-right">
+                    <div class="notification-badge" id="notification-badge" style="display: none;">
+                        <i class="fas fa-bell"></i>
+                        <span id="notification-count">0</span>
+                    </div>
                     <div class="current-date" id="current-date"></div>
                     <button class="btn btn-primary" id="quick-add">
                         <i class="fas fa-plus"></i> <span class="btn-text">Nova Transação</span>
@@ -123,6 +128,9 @@
                             <input type="date" id="start-date" class="date-input">
                             <span>até</span>
                             <input type="date" id="end-date" class="date-input">
+                            <button class="calendar-btn">
+                                <i class="fas fa-calendar-alt"></i> <span>Selecionar Datas</span>
+                            </button>
                         </div>
                         <button class="btn btn-secondary" id="apply-filters">
                             <i class="fas fa-filter"></i> <span class="btn-text">Aplicar Filtros</span>
@@ -173,7 +181,52 @@
                         </div>
                     </div>
 
-                    <!-- Gráficos -->
+                    <!-- Resumo de Alertas -->
+                    <div class="alerts-summary">
+                        <div class="summary-card warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <div>
+                                <span>Limites Próximos</span>
+                                <strong id="near-limits">0</strong>
+                            </div>
+                        </div>
+                        <div class="summary-card danger">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <div>
+                                <span>Limites Excedidos</span>
+                                <strong id="exceeded-limits">0</strong>
+                            </div>
+                        </div>
+                        <div class="summary-card info">
+                            <i class="fas fa-chart-pie"></i>
+                            <div>
+                                <span>% Gastos</span>
+                                <strong id="spent-percentage">0%</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Gráficos Separados -->
+                    <div class="charts-row">
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i class="fas fa-chart-pie"></i> Gráfico de Pizza</h3>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="pie-chart"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i class="fas fa-chart-bar"></i> Gráfico de Colunas</h3>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="bar-chart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Gráficos Principais -->
                     <div class="charts-container">
                         <div class="chart-card">
                             <div class="chart-header">
@@ -186,19 +239,6 @@
                             </div>
                             <div class="chart-wrapper">
                                 <canvas id="income-expense-chart"></canvas>
-                            </div>
-                        </div>
-                        <div class="chart-card">
-                            <div class="chart-header">
-                                <h3>Gastos por Categoria</h3>
-                                <select id="chart-type" class="chart-filter">
-                                    <option value="pie">Pizza</option>
-                                    <option value="bar">Barras</option>
-                                    <option value="doughnut">Rosca</option>
-                                </select>
-                            </div>
-                            <div class="chart-wrapper">
-                                <canvas id="category-chart"></canvas>
                             </div>
                         </div>
                         <div class="chart-card full-width">
@@ -432,13 +472,9 @@
                                     <button class="btn btn-danger" id="clear-all-data">
                                         <i class="fas fa-trash"></i> Apagar Todos os Dados
                                     </button>
-                                </div>
-                                <!-- Adicione este botão na seção de Importação, depois do botão "Apagar Todos os Dados" -->
-                                <div class="import-actions">
                                     <button class="btn btn-secondary" id="download-template">
                                         <i class="fas fa-file-download"></i> Baixar Template
                                     </button>
-                                   
                                 </div>
                             </div>
                         </div>
@@ -480,6 +516,31 @@
                         <button class="btn btn-primary" id="add-limit">
                             <i class="fas fa-plus"></i> <span class="btn-text">Adicionar Limite</span>
                         </button>
+                    </div>
+
+                    <!-- Resumo de Alertas -->
+                    <div class="alerts-summary">
+                        <div class="summary-card warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <div>
+                                <span>Limites Próximos</span>
+                                <strong id="near-limits-alerts">0</strong>
+                            </div>
+                        </div>
+                        <div class="summary-card danger">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <div>
+                                <span>Limites Excedidos</span>
+                                <strong id="exceeded-limits-alerts">0</strong>
+                            </div>
+                        </div>
+                        <div class="summary-card info">
+                            <i class="fas fa-chart-pie"></i>
+                            <div>
+                                <span>% Gastos</span>
+                                <strong id="spent-percentage-alerts">0%</strong>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Limite Geral -->
@@ -779,6 +840,33 @@
                             <button type="submit" class="btn btn-primary" id="save-investment-btn">Salvar</button>
                         </div>
                     </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal para calendário interativo -->
+        <div class="modal" id="calendar-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Selecionar Período</h3>
+                    <button class="close-modal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="calendar-datepicker"></div>
+                    <div class="selected-dates">
+                        <div class="date-info">
+                            <span>Data Inicial:</span>
+                            <strong id="calendar-start-date">--/--/----</strong>
+                        </div>
+                        <div class="date-info">
+                            <span>Data Final:</span>
+                            <strong id="calendar-end-date">--/--/----</strong>
+                        </div>
+                    </div>
+                    <div class="calendar-actions">
+                        <button class="btn btn-secondary" id="cancel-calendar">Cancelar</button>
+                        <button class="btn btn-primary" id="apply-calendar">Aplicar</button>
+                    </div>
                 </div>
             </div>
         </div>

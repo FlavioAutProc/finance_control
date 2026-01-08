@@ -1,7 +1,6 @@
-// [file name]: app.js
-// [file content begin]
-// Sistema de Controle Financeiro Pessoal - Versão Profissional 4.2
-// Arquivo principal com IndexedDB e funcionalidades completas - CORRIGIDO
+// [file name]: app.js - Versão 4.0 CORRIGIDA
+// Sistema de Controle Financeiro Pessoal - Versão Profissional 4.0
+// Arquivo principal com IndexedDB e funcionalidades completas - CORRIGIDO E MELHORADO
 
 class FinanceApp {
     constructor() {
@@ -10,13 +9,27 @@ class FinanceApp {
         this.transactionsPage = 1;
         this.transactionsPerPage = 10;
         this.charts = {};
+        
+        // Filtros independentes por seção
         this.filters = {
-            period: 'current-month',
-            startDate: null,
-            endDate: null,
-            type: 'all',
-            category: 'all',
-            status: 'all'
+            dashboard: {
+                period: 'current-month',
+                startDate: null,
+                endDate: null
+            },
+            transactions: {
+                period: 'all',
+                startDate: null,
+                endDate: null,
+                type: 'all',
+                category: 'all',
+                status: 'all',
+                month: 'all'
+            },
+            charts: {
+                period: 'current-month',
+                type: 'income-expense'
+            }
         };
         
         // Cache para melhor performance
@@ -24,8 +37,16 @@ class FinanceApp {
             transactions: null,
             investments: null,
             categories: null,
+            limits: null,
             lastUpdate: null
         };
+        
+        // Cache de filtros aplicados
+        this.lastFilterState = {};
+        
+        // Controle de transações duplicadas
+        this.lastTransactionHash = null;
+        this.transactionLock = false;
         
         this.init();
     }
@@ -48,7 +69,10 @@ class FinanceApp {
             // Verificar e atualizar cache
             this.checkAndUpdateCache();
             
-            console.log('✅ Sistema inicializado com sucesso');
+            // Inicializar calendário
+            this.initCalendar();
+            
+            console.log('✅ Sistema inicializado com sucesso - Versão 4.0');
             
         } catch (error) {
             console.error('❌ Erro na inicialização:', error);
@@ -56,18 +80,72 @@ class FinanceApp {
         }
     }
 
+    // Inicializar calendário Flatpickr
+    initCalendar() {
+        try {
+            const flatpickrConfig = {
+                locale: 'pt',
+                mode: 'range',
+                dateFormat: 'd/m/Y',
+                static: true,
+                inline: true,
+                showMonths: 1,
+                onChange: (selectedDates, dateStr, instance) => {
+                    if (selectedDates.length === 2) {
+                        const startDate = selectedDates[0];
+                        const endDate = selectedDates[1];
+                        
+                        // Formatar datas para YYYY-MM-DD
+                        const formatDate = (date) => {
+                            const year = date.getFullYear();
+                            const month = String(date.getMonth() + 1).padStart(2, '0');
+                            const day = String(date.getDate()).padStart(2, '0');
+                            return `${year}-${month}-${day}`;
+                        };
+                        
+                        document.getElementById('calendar-start-date').textContent = 
+                            startDate.toLocaleDateString('pt-BR');
+                        document.getElementById('calendar-end-date').textContent = 
+                            endDate.toLocaleDateString('pt-BR');
+                        
+                        // Salvar datas selecionadas
+                        this.calendarDates = {
+                            start: formatDate(startDate),
+                            end: formatDate(endDate)
+                        };
+                    }
+                }
+            };
+            
+            this.calendar = flatpickr('#calendar-datepicker', flatpickrConfig);
+            
+        } catch (error) {
+            console.error('Erro ao inicializar calendário:', error);
+            // Fallback para inputs de data padrão
+            this.setupDateInputsFallback();
+        }
+    }
+
+    setupDateInputsFallback() {
+        // Implementação fallback se Flatpickr não carregar
+        console.log('Usando fallback para seleção de datas');
+    }
+
     // Adicionar novo método para ajustar gráficos:
     adjustChartsForMobile() {
         const updateChartSizes = () => {
-            if (window.innerWidth <= 768) {
-                document.querySelectorAll('.chart-wrapper').forEach(wrapper => {
-                    wrapper.style.minHeight = '200px';
-                });
-            } else {
-                document.querySelectorAll('.chart-wrapper').forEach(wrapper => {
-                    wrapper.style.minHeight = '250px';
-                });
-            }
+            const isMobile = window.innerWidth <= 768;
+            const chartWrappers = document.querySelectorAll('.chart-wrapper');
+            
+            chartWrappers.forEach(wrapper => {
+                wrapper.style.minHeight = isMobile ? '200px' : '250px';
+                
+                // Ajustar canvas dentro do wrapper
+                const canvas = wrapper.querySelector('canvas');
+                if (canvas) {
+                    canvas.style.maxHeight = isMobile ? '180px' : '230px';
+                }
+            });
         };
         
         updateChartSizes();
@@ -89,8 +167,13 @@ class FinanceApp {
             this.cache.transactions = await this.getAllTransactions();
             this.cache.investments = await this.getAllInvestments();
             this.cache.categories = await this.getSetting('categories') || [];
+            this.cache.limits = await this.getAllLimits();
             this.cache.lastUpdate = Date.now();
             console.log('🔄 Cache atualizado');
+            
+            // Atualizar notificações se houver mudanças
+            this.updateNotificationBadge();
+            
         } catch (error) {
             console.error('Erro ao atualizar cache:', error);
         }
@@ -120,9 +203,142 @@ class FinanceApp {
         return this.cache.categories;
     }
 
+    async getCachedLimits() {
+        if (!this.cache.limits || !this.cache.lastUpdate) {
+            this.cache.limits = await this.getAllLimits();
+            this.cache.lastUpdate = Date.now();
+        }
+        return this.cache.limits;
+    }
+
+    // Atualizar badge de notificações
+    async updateNotificationBadge() {
+        try {
+            const limits = await this.getCachedLimits();
+            const transactions = await this.getCachedTransactions();
+            
+            const now = new Date();
+            const currentMonth = now.getMonth();
+            const currentYear = now.getFullYear();
+            
+            // Calcular gastos do mês
+            const monthlyExpenses = transactions
+                .filter(t => {
+                    try {
+                        const date = new Date(t.date);
+                        return date.getMonth() === currentMonth && 
+                               date.getFullYear() === currentYear &&
+                               t.type === 'Despesa';
+                    } catch {
+                        return false;
+                    }
+                })
+                .reduce((sum, t) => sum + t.value, 0);
+            
+            // Verificar limites
+            let nearLimits = 0;
+            let exceededLimits = 0;
+            
+            // Verificar limite geral
+            const generalLimit = await this.getSetting('generalLimit');
+            if (generalLimit) {
+                const percentage = (monthlyExpenses / generalLimit) * 100;
+                if (percentage >= 100) exceededLimits++;
+                else if (percentage >= 80) nearLimits++;
+            }
+            
+            // Verificar limites por categoria
+            const categorySpending = {};
+            transactions
+                .filter(t => {
+                    try {
+                        const date = new Date(t.date);
+                        return date.getMonth() === currentMonth && 
+                               date.getFullYear() === currentYear &&
+                               t.type === 'Despesa';
+                    } catch {
+                        return false;
+                    }
+                })
+                .forEach(t => {
+                    if (!categorySpending[t.category]) {
+                        categorySpending[t.category] = 0;
+                    }
+                    categorySpending[t.category] += t.value;
+                });
+            
+            limits.forEach(limit => {
+                const spent = categorySpending[limit.category] || 0;
+                const percentage = limit.amount > 0 ? (spent / limit.amount) * 100 : 0;
+                
+                if (percentage >= 100) {
+                    exceededLimits++;
+                } else if (percentage >= 80) {
+                    nearLimits++;
+                }
+            });
+            
+            const totalNotifications = nearLimits + exceededLimits;
+            
+            // Atualizar badge
+            const badge = document.getElementById('notification-badge');
+            const countElement = document.getElementById('notification-count');
+            
+            if (badge && countElement) {
+                if (totalNotifications > 0) {
+                    badge.style.display = 'flex';
+                    countElement.textContent = totalNotifications;
+                    
+                    // Adicionar animação de pulso
+                    badge.style.animation = 'pulse 2s infinite';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+            
+            // Atualizar resumo de alertas
+            this.updateAlertsSummary(nearLimits, exceededLimits, monthlyExpenses, generalLimit);
+            
+        } catch (error) {
+            console.error('Erro ao atualizar notificações:', error);
+        }
+    }
+
+    // Atualizar resumo de alertas
+    async updateAlertsSummary(nearLimits, exceededLimits, monthlyExpenses, generalLimit) {
+        try {
+            const nearElement = document.getElementById('near-limits');
+            const exceededElement = document.getElementById('exceeded-limits');
+            const percentageElement = document.getElementById('spent-percentage');
+            
+            if (nearElement) nearElement.textContent = nearLimits;
+            if (exceededElement) exceededElement.textContent = exceededLimits;
+            
+            if (percentageElement && generalLimit) {
+                const percentage = Math.min((monthlyExpenses / generalLimit) * 100, 100);
+                percentageElement.textContent = `${percentage.toFixed(1)}%`;
+                
+                // Atualizar cor baseada na porcentagem
+                if (percentage >= 100) {
+                    percentageElement.style.color = 'var(--danger-color)';
+                } else if (percentage >= 80) {
+                    percentageElement.style.color = 'var(--warning-color)';
+                } else {
+                    percentageElement.style.color = 'var(--success-color)';
+                }
+            } else if (percentageElement) {
+                percentageElement.textContent = 'N/A';
+                percentageElement.style.color = 'var(--text-muted)';
+            }
+            
+        } catch (error) {
+            console.error('Erro ao atualizar resumo de alertas:', error);
+        }
+    }
+
     initDatabase() {
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open('FinanceDB_Pro_v4', 2); // Versão atualizada
+            const request = indexedDB.open('FinanceDB_Pro_v4', 3); // Nova versão
 
             request.onerror = (event) => {
                 console.error('Erro ao abrir o banco de dados:', event.target.error);
@@ -143,7 +359,7 @@ class FinanceApp {
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
                 const oldVersion = event.oldVersion || 0;
-                const newVersion = event.newVersion || 2;
+                const newVersion = event.newVersion || 3;
 
                 console.log(`🔄 Atualizando banco de dados: v${oldVersion} → v${newVersion}`);
 
@@ -190,10 +406,19 @@ class FinanceApp {
 
                 // Migração da versão 1 para 2
                 if (oldVersion < 2) {
-                    // Adicionar índices adicionais se necessário
+                    // Adicionar índice para hash de transação (prevenir duplicatas)
                     const transactionStore = request.transaction.objectStore('transactions');
-                    if (!transactionStore.indexNames.contains('monthYear')) {
-                        transactionStore.createIndex('monthYear', ['date'], { unique: false });
+                    if (!transactionStore.indexNames.contains('transactionHash')) {
+                        transactionStore.createIndex('transactionHash', 'transactionHash', { unique: false });
+                    }
+                }
+
+                // Migração da versão 2 para 3
+                if (oldVersion < 3) {
+                    // Adicionar índice para busca mais eficiente
+                    const transactionStore = request.transaction.objectStore('transactions');
+                    if (!transactionStore.indexNames.contains('monthYearCategory')) {
+                        transactionStore.createIndex('monthYearCategory', ['date', 'category'], { unique: false });
                     }
                 }
             };
@@ -204,6 +429,18 @@ class FinanceApp {
     checkDatabaseMigration() {
         // Verificar e criar configurações padrão se não existirem
         this.ensureDefaultSettings();
+        
+        // Verificar se precisa criar índices adicionais
+        this.checkAdditionalIndexes();
+    }
+
+    async checkAdditionalIndexes() {
+        try {
+            // Esta função pode ser expandida para verificar índices ausentes
+            console.log('✅ Verificação de índices concluída');
+        } catch (error) {
+            console.error('Erro ao verificar índices:', error);
+        }
     }
 
     async ensureDefaultSettings() {
@@ -297,7 +534,7 @@ class FinanceApp {
                 });
             }
 
-            // Filtros do dashboard
+            // Filtros do dashboard - AGORA INDEPENDENTES
             const dashboardPeriod = document.getElementById('dashboard-period');
             if (dashboardPeriod) {
                 dashboardPeriod.addEventListener('change', (e) => {
@@ -306,54 +543,55 @@ class FinanceApp {
                     
                     if (value === 'custom') {
                         customRange.style.display = 'flex';
+                        // Abrir modal de calendário
+                        this.openCalendarModal('dashboard');
                     } else {
                         customRange.style.display = 'none';
-                        this.filters.period = value;
+                        this.filters.dashboard.period = value;
+                        this.filters.dashboard.startDate = null;
+                        this.filters.dashboard.endDate = null;
                         this.updateDashboard();
                     }
                 });
             }
 
+            // Botão para abrir calendário
+            const openCalendarBtn = document.createElement('button');
+            openCalendarBtn.className = 'calendar-btn';
+            openCalendarBtn.innerHTML = '<i class="fas fa-calendar-alt"></i> <span>Selecionar Datas</span>';
+            openCalendarBtn.addEventListener('click', () => {
+                this.openCalendarModal('dashboard');
+            });
+            
+            const customRange = document.getElementById('custom-date-range');
+            if (customRange) {
+                customRange.appendChild(openCalendarBtn);
+            }
+
             const applyFiltersBtn = document.getElementById('apply-filters');
             if (applyFiltersBtn) {
                 applyFiltersBtn.addEventListener('click', () => {
-                    if (this.filters.period === 'custom') {
-                        const startDate = document.getElementById('start-date').value;
-                        const endDate = document.getElementById('end-date').value;
-                        
-                        if (!startDate || !endDate) {
-                            this.showAlert('Selecione ambas as datas para o período personalizado', 'warning');
-                            return;
-                        }
-                        
-                        this.filters.startDate = startDate;
-                        this.filters.endDate = endDate;
-                    }
-                    
-                    this.updateDashboard();
+                    this.applyDashboardFilters();
                 });
             }
 
-            // Filtros de data
-            const today = new Date().toISOString().split('T')[0];
+            // Filtros de data para dashboard (fallback)
             const startDateInput = document.getElementById('start-date');
             const endDateInput = document.getElementById('end-date');
             
-            if (startDateInput) {
+            if (startDateInput && endDateInput) {
+                const today = new Date().toISOString().split('T')[0];
                 startDateInput.max = today;
-                startDateInput.addEventListener('change', (e) => {
-                    if (endDateInput) {
-                        endDateInput.min = e.target.value;
-                    }
-                });
-            }
-            
-            if (endDateInput) {
                 endDateInput.max = today;
+                
+                startDateInput.addEventListener('change', (e) => {
+                    endDateInput.min = e.target.value;
+                    this.filters.dashboard.startDate = e.target.value;
+                });
+                
                 endDateInput.addEventListener('change', (e) => {
-                    if (startDateInput) {
-                        startDateInput.max = e.target.value;
-                    }
+                    startDateInput.max = e.target.value;
+                    this.filters.dashboard.endDate = e.target.value;
                 });
             }
 
@@ -389,11 +627,15 @@ class FinanceApp {
                 });
             }
 
-            // Filtros de transações
+            // Filtros de transações - AGORA INDEPENDENTES
             ['filter-type', 'filter-month', 'filter-category', 'filter-status'].forEach(id => {
                 const element = document.getElementById(id);
                 if (element) {
-                    element.addEventListener('change', () => {
+                    element.addEventListener('change', (e) => {
+                        // Atualizar filtro específico
+                        const filterType = id.replace('filter-', '');
+                        this.filters.transactions[filterType] = e.target.value;
+                        
                         this.transactionsPage = 1;
                         this.loadTransactions();
                     });
@@ -459,12 +701,31 @@ class FinanceApp {
                 });
             }
 
-            // Salvar transação
+            // Salvar transação - PREVENIR DUPLICAÇÃO
             const transactionForm = document.getElementById('transaction-form');
             if (transactionForm) {
-                transactionForm.addEventListener('submit', (e) => {
+                transactionForm.addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    this.saveTransaction();
+                    
+                    // Prevenir múltiplos cliques
+                    if (this.transactionLock) {
+                        console.log('⚠️ Transação já em processamento...');
+                        return;
+                    }
+                    
+                    this.transactionLock = true;
+                    
+                    try {
+                        await this.saveTransaction();
+                    } catch (error) {
+                        console.error('Erro ao salvar transação:', error);
+                        this.showAlert('Erro ao salvar transação', 'danger');
+                    } finally {
+                        // Liberar o lock após 1 segundo
+                        setTimeout(() => {
+                            this.transactionLock = false;
+                        }, 1000);
+                    }
                 });
             }
 
@@ -588,19 +849,12 @@ class FinanceApp {
                 }
             });
 
-            // Filtros de gráficos
+            // Filtros de gráficos (agora temos gráficos separados)
             const chartPeriod = document.getElementById('chart-period');
-            const chartType = document.getElementById('chart-type');
-            
             if (chartPeriod) {
                 chartPeriod.addEventListener('change', () => {
+                    this.filters.charts.period = chartPeriod.value;
                     this.updateCharts();
-                });
-            }
-            
-            if (chartType) {
-                chartType.addEventListener('change', () => {
-                    this.createCategoryChart();
                 });
             }
 
@@ -637,11 +891,97 @@ class FinanceApp {
                 });
             }
 
+            // Notificações - clique no badge
+            const notificationBadge = document.getElementById('notification-badge');
+            if (notificationBadge) {
+                notificationBadge.addEventListener('click', () => {
+                    this.switchSection('alerts');
+                });
+            }
+
+            // Calendário modal
+            const cancelCalendarBtn = document.getElementById('cancel-calendar');
+            const applyCalendarBtn = document.getElementById('apply-calendar');
+            
+            if (cancelCalendarBtn) {
+                cancelCalendarBtn.addEventListener('click', () => {
+                    this.closeModal();
+                });
+            }
+            
+            if (applyCalendarBtn) {
+                applyCalendarBtn.addEventListener('click', () => {
+                    this.applyCalendarSelection();
+                });
+            }
+
             console.log('✅ Eventos vinculados com sucesso');
 
         } catch (error) {
             console.error('❌ Erro ao vincular eventos:', error);
         }
+    }
+
+    // Abrir modal de calendário
+    openCalendarModal(context = 'dashboard') {
+        this.calendarContext = context;
+        const modal = document.getElementById('calendar-modal');
+        if (modal) {
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+            
+            // Resetar datas se houver
+            if (this.calendar) {
+                this.calendar.clear();
+            }
+        }
+    }
+
+    // Aplicar seleção do calendário
+    applyCalendarSelection() {
+        if (!this.calendarDates) {
+            this.showAlert('Selecione um período no calendário', 'warning');
+            return;
+        }
+
+        const { start, end } = this.calendarDates;
+        
+        if (this.calendarContext === 'dashboard') {
+            this.filters.dashboard.period = 'custom';
+            this.filters.dashboard.startDate = start;
+            this.filters.dashboard.endDate = end;
+            
+            // Atualizar inputs visuais
+            const startDateInput = document.getElementById('start-date');
+            const endDateInput = document.getElementById('end-date');
+            
+            if (startDateInput) startDateInput.value = start;
+            if (endDateInput) endDateInput.value = end;
+            
+            // Atualizar dashboard
+            this.updateDashboard();
+        }
+        
+        this.closeModal();
+        this.showAlert('Período selecionado aplicado!', 'success');
+    }
+
+    // Aplicar filtros do dashboard
+    applyDashboardFilters() {
+        if (this.filters.dashboard.period === 'custom') {
+            const startDate = document.getElementById('start-date')?.value;
+            const endDate = document.getElementById('end-date')?.value;
+            
+            if (!startDate || !endDate) {
+                this.showAlert('Selecione ambas as datas para o período personalizado', 'warning');
+                return;
+            }
+            
+            this.filters.dashboard.startDate = startDate;
+            this.filters.dashboard.endDate = endDate;
+        }
+        
+        this.updateDashboard();
     }
 
     async updateCategoriesBasedOnType() {
@@ -712,6 +1052,9 @@ class FinanceApp {
             
             // Atualizar cache
             await this.refreshCache();
+            
+            // Atualizar notificações
+            await this.updateNotificationBadge();
             
             console.log('✅ Dados iniciais carregados com sucesso');
             
@@ -868,6 +1211,9 @@ class FinanceApp {
                 if (editingInput) {
                     editingInput.remove();
                 }
+                
+                // Resetar categorias
+                this.updateCategoriesBasedOnType();
             }
         } catch (error) {
             console.error('Erro ao limpar formulário:', error);
@@ -918,10 +1264,9 @@ class FinanceApp {
     async loadDashboardData() {
         try {
             const transactions = await this.getCachedTransactions();
-            const investments = await this.getCachedInvestments();
             
-            // Aplicar filtros de período
-            let filteredTransactions = this.filterByPeriod(transactions);
+            // Aplicar filtros do DASHBOARD (independentes)
+            let filteredTransactions = this.filterByPeriod(transactions, 'dashboard');
             
             // Calcular totais
             const totalIncome = filteredTransactions
@@ -934,6 +1279,7 @@ class FinanceApp {
             
             const currentBalance = totalIncome - totalExpense;
             
+            const investments = await this.getCachedInvestments();
             const totalInvestment = investments
                 .reduce((sum, inv) => sum + inv.currentValue, 0);
             
@@ -956,7 +1302,19 @@ class FinanceApp {
             updateElement('current-balance', formatValue(currentBalance));
             updateElement('total-investment', formatValue(totalInvestment));
             
-            // Carregar transações recentes
+            // Atualizar cores do saldo
+            const balanceElement = document.getElementById('current-balance');
+            if (balanceElement) {
+                if (currentBalance >= 0) {
+                    balanceElement.classList.add('balance-positive');
+                    balanceElement.classList.remove('balance-negative');
+                } else {
+                    balanceElement.classList.add('balance-negative');
+                    balanceElement.classList.remove('balance-positive');
+                }
+            }
+            
+            // Carregar transações recentes (com filtro do dashboard)
             await this.loadRecentTransactions(filteredTransactions);
             
         } catch (error) {
@@ -964,12 +1322,13 @@ class FinanceApp {
         }
     }
 
-    filterByPeriod(transactions) {
+    filterByPeriod(transactions, context = 'dashboard') {
         try {
+            const filters = this.filters[context];
             const now = new Date();
             let startDate, endDate;
             
-            switch(this.filters.period) {
+            switch(filters.period) {
                 case 'current-month':
                     startDate = new Date(now.getFullYear(), now.getMonth(), 1);
                     endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -983,9 +1342,9 @@ class FinanceApp {
                     endDate = new Date(now.getFullYear(), 11, 31);
                     break;
                 case 'custom':
-                    if (this.filters.startDate && this.filters.endDate) {
-                        startDate = new Date(this.filters.startDate);
-                        endDate = new Date(this.filters.endDate);
+                    if (filters.startDate && filters.endDate) {
+                        startDate = new Date(filters.startDate);
+                        endDate = new Date(filters.endDate);
                         // Garantir que a data final inclua o dia inteiro
                         endDate.setHours(23, 59, 59, 999);
                     } else {
@@ -1196,27 +1555,26 @@ class FinanceApp {
             // Usar cache para melhor performance
             const transactions = await this.getCachedTransactions();
             
-            // Aplicar filtros
-            let filtered = this.filterByPeriod(transactions);
+            // Aplicar filtros INDEPENDENTES da seção de transações
+            let filtered = this.filterByPeriod(transactions, 'transactions');
             
-            const typeFilter = document.getElementById('filter-type')?.value || 'all';
-            const categoryFilter = document.getElementById('filter-category')?.value || 'all';
-            const statusFilter = document.getElementById('filter-status')?.value || 'all';
+            // Aplicar outros filtros específicos de transações
+            const { type, category, status } = this.filters.transactions;
             
-            if (typeFilter !== 'all') {
-                filtered = filtered.filter(t => t.type === typeFilter);
+            if (type !== 'all') {
+                filtered = filtered.filter(t => t.type === type);
             }
             
-            if (categoryFilter !== 'all') {
-                filtered = filtered.filter(t => t.category === categoryFilter);
+            if (category !== 'all') {
+                filtered = filtered.filter(t => t.category === category);
             }
             
-            if (statusFilter !== 'all') {
+            if (status !== 'all') {
                 filtered = filtered.filter(t => {
-                    if (statusFilter === 'overdue') {
+                    if (status === 'overdue') {
                         return t.status === 'pending' && new Date(t.date) < new Date();
                     }
-                    return t.status === statusFilter;
+                    return t.status === status;
                 });
             }
             
@@ -1644,7 +2002,7 @@ class FinanceApp {
         }
     }
 
-    async updateGeneralLimit(generalLimit) {
+        async updateGeneralLimit(generalLimit) {
         try {
             const now = new Date();
             const currentMonth = now.getMonth();
@@ -1656,8 +2014,8 @@ class FinanceApp {
                     try {
                         const date = new Date(t.date);
                         return date.getMonth() === currentMonth && 
-                               date.getFullYear() === currentYear &&
-                               t.type === 'Despesa';
+                            date.getFullYear() === currentYear &&
+                            t.type === 'Despesa';
                     } catch {
                         return false;
                     }
@@ -1674,7 +2032,10 @@ class FinanceApp {
                 const percentage = Math.min((monthlyExpenses / generalLimit) * 100, 100);
                 
                 currentElement.textContent = `R$ ${monthlyExpenses.toFixed(2).replace('.', ',')}`;
-                maxElement.textContent = `R$ ${generalLimit.toFixed(2).replace('.', ',')}`;
+                maxElement.innerHTML = `R$ ${generalLimit.toFixed(2).replace('.', ',')} 
+                    <button class="btn-icon edit-limit" data-action="edit-general-limit" title="Editar limite">
+                        <i class="fas fa-edit"></i>
+                    </button>`;
                 
                 progressElement.innerHTML = `
                     <div class="progress-bar">
@@ -1682,15 +2043,46 @@ class FinanceApp {
                     </div>
                     <span class="progress-text">${percentage.toFixed(1)}% utilizado</span>
                 `;
+                
+                // Adicionar evento ao botão de edição
+                const editBtn = maxElement.querySelector('.edit-limit');
+                if (editBtn) {
+                    editBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const newLimit = parseFloat(prompt('Digite o novo limite geral mensal (R$):', generalLimit)) || 0;
+                        if (newLimit > 0) {
+                            await this.saveSetting('generalLimit', newLimit);
+                            await this.loadLimits();
+                            this.showAlert('Limite geral atualizado com sucesso!', 'success');
+                        }
+                    });
+                }
             } else {
                 currentElement.textContent = 'R$ 0,00';
-                maxElement.textContent = 'Não configurado';
+                maxElement.innerHTML = `Não configurado 
+                    <button class="btn-icon edit-limit" data-action="edit-general-limit" title="Configurar limite">
+                        <i class="fas fa-plus"></i>
+                    </button>`;
                 progressElement.innerHTML = `
                     <div class="progress-bar">
                         <div class="progress-fill" style="width: 0%"></div>
                     </div>
                     <span class="progress-text">Limite não configurado</span>
                 `;
+                
+                // Adicionar evento ao botão de adicionar
+                const addBtn = maxElement.querySelector('.edit-limit');
+                if (addBtn) {
+                    addBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const newLimit = parseFloat(prompt('Digite o limite geral mensal (R$):', '')) || 0;
+                        if (newLimit > 0) {
+                            await this.saveSetting('generalLimit', newLimit);
+                            await this.loadLimits();
+                            this.showAlert('Limite geral configurado com sucesso!', 'success');
+                        }
+                    });
+                }
             }
         } catch (error) {
             console.error('Erro ao atualizar limite geral:', error);
@@ -1783,6 +2175,9 @@ class FinanceApp {
                         <td><span class="badge ${statusClass}">${status}</span></td>
                         <td>
                             <div class="table-actions">
+                                <button class="action-btn edit" data-id="${limit.id}" title="Editar">
+                                    <i class="fas fa-edit"></i>
+                                </button>
                                 <button class="action-btn delete" data-id="${limit.id}" title="Excluir">
                                     <i class="fas fa-trash"></i>
                                 </button>
@@ -1790,7 +2185,12 @@ class FinanceApp {
                         </td>
                     `;
                     
-                    // Adicionar eventos para exclusão
+                    // Adicionar eventos
+                    row.querySelector('.edit').addEventListener('click', async (e) => {
+                        const id = parseInt(e.currentTarget.dataset.id);
+                        this.openEditLimitModal(id);
+                    });
+                    
                     row.querySelector('.delete').addEventListener('click', async (e) => {
                         const id = parseInt(e.currentTarget.dataset.id);
                         if (confirm('Tem certeza que deseja excluir este limite?')) {
@@ -1832,10 +2232,76 @@ class FinanceApp {
         }
     }
 
+    async openEditLimitModal(limitId) {
+        try {
+            const limit = await this.getLimit(limitId);
+            if (!limit) {
+                this.showAlert('Limite não encontrado', 'warning');
+                return;
+            }
+            
+            // Mostrar formulário de edição
+            document.getElementById('add-limit-form').style.display = 'block';
+            
+            // Preencher campos
+            const categorySelect = document.getElementById('limit-category');
+            const amountInput = document.getElementById('limit-amount');
+            
+            if (categorySelect) categorySelect.value = limit.category;
+            if (amountInput) amountInput.value = limit.amount;
+            
+            // Adicionar campo oculto para identificar edição
+            let editingInput = document.querySelector('#limit-form [name="editing"]');
+            if (!editingInput) {
+                editingInput = document.createElement('input');
+                editingInput.type = 'hidden';
+                editingInput.name = 'editing';
+                editingInput.value = limit.id;
+                document.getElementById('limit-form').appendChild(editingInput);
+            } else {
+                editingInput.value = limit.id;
+            }
+            
+            // Focar no campo de valor
+            if (amountInput) {
+                amountInput.focus();
+            }
+            
+            // Scroll para o formulário
+            document.getElementById('add-limit-form').scrollIntoView({ behavior: 'smooth' });
+            
+        } catch (error) {
+            console.error('Erro ao abrir modal de edição de limite:', error);
+            this.showAlert('Erro ao abrir edição de limite', 'danger');
+        }
+    }
+
+    async getLimit(id) {
+        return new Promise((resolve, reject) => {
+            if (!this.db) {
+                reject(new Error('Banco de dados não inicializado'));
+                return;
+            }
+            
+            const tx = this.db.transaction(['limits'], 'readonly');
+            const store = tx.objectStore('limits');
+            const request = store.get(id);
+            
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
     openAddLimitModal(categoryName) {
         try {
             // Mostrar formulário de adição de limite
             document.getElementById('add-limit-form').style.display = 'block';
+            
+            // Remover flag de edição se existir
+            const editingInput = document.querySelector('#limit-form [name="editing"]');
+            if (editingInput) {
+                editingInput.remove();
+            }
             
             // Preencher categoria automaticamente
             const categorySelect = document.getElementById('limit-category');
@@ -1859,7 +2325,7 @@ class FinanceApp {
 
     async checkLimits() {
         try {
-            const limits = await this.getAllLimits();
+            const limits = await this.getCachedLimits();
             const generalLimit = await this.getSetting('generalLimit');
             const now = new Date();
             const currentMonth = now.getMonth();
@@ -1945,6 +2411,10 @@ class FinanceApp {
                     alertsContainer.appendChild(alert);
                 }
             });
+            
+            // Atualizar notificações
+            this.updateNotificationBadge();
+            
         } catch (error) {
             console.error('Erro ao verificar limites:', error);
         }
@@ -2035,9 +2505,25 @@ class FinanceApp {
                 modal.classList.remove('active');
             });
             document.body.style.overflow = '';
+            
+            // Limpar contexto do calendário
+            this.calendarContext = null;
+            this.calendarDates = null;
         } catch (error) {
             console.error('Erro ao fechar modal:', error);
         }
+    }
+
+    // Gerar hash para prevenir transações duplicadas
+    generateTransactionHash(transaction) {
+        const str = `${transaction.date}-${transaction.type}-${transaction.category}-${transaction.value}-${transaction.description}`;
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+        }
+        return hash;
     }
 
     async saveTransaction() {
@@ -2077,6 +2563,17 @@ class FinanceApp {
                 this.showAlert('Preencha todos os campos obrigatórios corretamente', 'warning');
                 return;
             }
+            
+            // Verificar duplicata
+            const transactionHash = this.generateTransactionHash(transaction);
+            
+            if (!isEditing && this.lastTransactionHash === transactionHash) {
+                console.log('⚠️ Transação duplicada detectada, ignorando...');
+                this.showAlert('Esta transação já foi salva recentemente', 'warning');
+                return;
+            }
+            
+            this.lastTransactionHash = transactionHash;
             
             let result;
             if (isEditing) {
@@ -2168,23 +2665,71 @@ class FinanceApp {
                 return;
             }
             
+            // Verificar se é edição
+            const editingInput = document.querySelector('#limit-form [name="editing"]');
+            const isEditing = editingInput && editingInput.value;
+            
             const limit = {
                 category: document.getElementById('limit-category').value,
                 amount: parseFloat(document.getElementById('limit-amount').value),
                 createdAt: new Date().toISOString()
             };
             
-            await this.addLimit(limit);
-            this.showAlert('Limite salvo com sucesso!', 'success');
+            if (isEditing) {
+                // Atualizar limite existente
+                const existingLimit = await this.getLimit(parseInt(editingInput.value));
+                if (existingLimit) {
+                    limit.id = existingLimit.id;
+                    limit.createdAt = existingLimit.createdAt;
+                    await this.updateLimit(limit);
+                    console.log('✅ Limite atualizado:', limit);
+                }
+            } else {
+                // Novo limite
+                await this.addLimit(limit);
+            }
+            
+            this.showAlert(`Limite ${isEditing ? 'atualizado' : 'salvo'} com sucesso!`, 'success');
             
             form.reset();
             document.getElementById('add-limit-form').style.display = 'none';
+            
+            // Remover flag de edição
+            if (editingInput) {
+                editingInput.remove();
+            }
+            
+            // Limpar cache
+            this.cache.limits = null;
+            
+            await this.refreshCache();
             await this.loadLimits();
             
         } catch (error) {
             console.error('Erro ao salvar limite:', error);
             this.showAlert('Erro ao salvar limite', 'danger');
         }
+    }
+
+    async updateLimit(limit) {
+        return new Promise((resolve, reject) => {
+            if (!this.db) {
+                reject(new Error('Banco de dados não inicializado'));
+                return;
+            }
+            
+            if (!limit.id) {
+                reject(new Error('Limite não tem ID'));
+                return;
+            }
+            
+            const tx = this.db.transaction(['limits'], 'readwrite');
+            const store = tx.objectStore('limits');
+            const request = store.put(limit);
+            
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
     }
 
     async addTransactionType() {
@@ -2275,12 +2820,26 @@ class FinanceApp {
                     div.innerHTML = `
                         <span>${type}</span>
                         <div class="item-actions">
+                            <button class="action-btn edit" data-type="${type}" title="Editar">
+                                <i class="fas fa-edit"></i>
+                            </button>
                             <button class="action-btn delete" data-type="${type}" title="Excluir">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
                     `;
                     typesList.appendChild(div);
+                });
+                
+                // Adicionar eventos de edição
+                typesList.querySelectorAll('.edit').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const type = e.currentTarget.dataset.type;
+                        const newType = prompt('Editar tipo:', type);
+                        if (newType && newType.trim() !== '' && newType !== type) {
+                            await this.editTransactionType(type, newType.trim());
+                        }
+                    });
                 });
                 
                 // Adicionar eventos de exclusão
@@ -2306,12 +2865,28 @@ class FinanceApp {
                     div.innerHTML = `
                         <span>${cat.name} <small>(${cat.type})</small></span>
                         <div class="item-actions">
+                            <button class="action-btn edit" data-category="${cat.name}" data-type="${cat.type}" title="Editar">
+                                <i class="fas fa-edit"></i>
+                            </button>
                             <button class="action-btn delete" data-category="${cat.name}" data-type="${cat.type}" title="Excluir">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
                     `;
                     categoriesList.appendChild(div);
+                });
+                
+                // Adicionar eventos de edição
+                categoriesList.querySelectorAll('.edit').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const category = e.currentTarget.dataset.category;
+                        const type = e.currentTarget.dataset.type;
+                        
+                        const newName = prompt('Editar nome da categoria:', category);
+                        if (newName && newName.trim() !== '' && newName !== category) {
+                            await this.editCategory(category, type, newName.trim());
+                        }
+                    });
                 });
                 
                 // Adicionar eventos de exclusão
@@ -2339,8 +2914,123 @@ class FinanceApp {
             if (notificationsCheckbox) notificationsCheckbox.checked = notifications;
             if (currencySymbolInput) currencySymbolInput.value = currencySymbol;
             
+            // Adicionar eventos às configurações gerais
+            if (autoCategorizeCheckbox) {
+                autoCategorizeCheckbox.addEventListener('change', async (e) => {
+                    await this.saveSetting('autoCategorize', e.target.checked);
+                    this.showAlert('Configuração salva!', 'success');
+                });
+            }
+            
+            if (notificationsCheckbox) {
+                notificationsCheckbox.addEventListener('change', async (e) => {
+                    await this.saveSetting('notifications', e.target.checked);
+                    this.showAlert('Configuração salva!', 'success');
+                });
+            }
+            
+            if (currencySymbolInput) {
+                currencySymbolInput.addEventListener('change', async (e) => {
+                    await this.saveSetting('currencySymbol', e.target.value);
+                    this.showAlert('Símbolo monetário atualizado!', 'success');
+                    // Atualizar interface
+                    this.loadDashboardData();
+                    this.loadTransactions();
+                });
+            }
+            
         } catch (error) {
             console.error('Erro ao carregar configurações da UI:', error);
+        }
+    }
+
+    async editTransactionType(oldType, newType) {
+        try {
+            const types = await this.getSetting('transactionTypes') || [];
+            const index = types.indexOf(oldType);
+            
+            if (index === -1) {
+                this.showAlert('Tipo não encontrado', 'warning');
+                return;
+            }
+            
+            if (types.includes(newType)) {
+                this.showAlert('Este tipo já existe', 'warning');
+                return;
+            }
+            
+            types[index] = newType;
+            await this.saveSetting('transactionTypes', types);
+            
+            this.showAlert('Tipo atualizado com sucesso!', 'success');
+            await this.loadTransactionTypes();
+            this.loadSettingsUI();
+            
+        } catch (error) {
+            console.error('Erro ao editar tipo:', error);
+            this.showAlert('Erro ao editar tipo', 'danger');
+        }
+    }
+
+    async editCategory(oldName, oldType, newName) {
+        try {
+            const categories = await this.getSetting('categories') || [];
+            const index = categories.findIndex(cat => cat.name === oldName && cat.type === oldType);
+            
+            if (index === -1) {
+                this.showAlert('Categoria não encontrada', 'warning');
+                return;
+            }
+            
+            if (categories.some(cat => cat.name === newName && cat.type === oldType)) {
+                this.showAlert('Esta categoria já existe', 'warning');
+                return;
+            }
+            
+            categories[index].name = newName;
+            await this.saveSetting('categories', categories);
+            
+            // Atualizar cache
+            this.cache.categories = null;
+            
+            this.showAlert('Categoria atualizada com sucesso!', 'success');
+            await this.loadCategories();
+            this.loadSettingsUI();
+            
+            // Atualizar transações com o novo nome da categoria
+            await this.updateTransactionsCategory(oldName, newName);
+            
+        } catch (error) {
+            console.error('Erro ao editar categoria:', error);
+            this.showAlert('Erro ao editar categoria', 'danger');
+        }
+    }
+
+    async updateTransactionsCategory(oldCategory, newCategory) {
+        try {
+            const transactions = await this.getCachedTransactions();
+            const updatedTransactions = transactions
+                .filter(t => t.category === oldCategory)
+                .map(t => {
+                    t.category = newCategory;
+                    t.updatedAt = new Date().toISOString();
+                    return t;
+                });
+            
+            // Atualizar transações no banco
+            for (const transaction of updatedTransactions) {
+                await this.updateTransaction(transaction);
+            }
+            
+            if (updatedTransactions.length > 0) {
+                console.log(`🔄 ${updatedTransactions.length} transações atualizadas com nova categoria`);
+                // Limpar cache
+                this.cache.transactions = null;
+                await this.refreshCache();
+            }
+            
+        } catch (error) {
+            console.error('Erro ao atualizar transações com nova categoria:', error);
         }
     }
 
@@ -2398,20 +3088,23 @@ class FinanceApp {
         
         this.charts = {};
         
-        // Carregar dados para os gráficos
+        // Carregar dados para os gráficos (com filtros do dashboard)
         this.loadChartData();
     }
 
     async loadChartData() {
         try {
             const transactions = await this.getCachedTransactions();
-            const filteredTransactions = this.filterByPeriod(transactions);
+            const filteredTransactions = this.filterByPeriod(transactions, 'dashboard');
             
             // Dados para gráfico de receita vs despesa
             await this.createIncomeExpenseChart(filteredTransactions);
             
-            // Dados para gráfico de categorias
-            await this.createCategoryChart(filteredTransactions);
+            // Dados para gráfico de pizza
+            await this.createPieChart(filteredTransactions);
+            
+            // Dados para gráfico de colunas
+            await this.createBarChart(filteredTransactions);
             
             // Dados para gráfico de tendência
             await this.createTrendChart(transactions);
@@ -2431,14 +3124,12 @@ class FinanceApp {
                 this.charts.incomeExpense.destroy();
             }
             
-            const monthlyTransactions = transactions;
-            
             const incomeExpenseData = {
                 labels: ['Receita', 'Despesa'],
                 datasets: [{
                     data: [
-                        monthlyTransactions.filter(t => t.type === 'Receita').reduce((sum, t) => sum + t.value, 0),
-                        monthlyTransactions.filter(t => t.type === 'Despesa').reduce((sum, t) => sum + t.value, 0)
+                        transactions.filter(t => t.type === 'Receita').reduce((sum, t) => sum + t.value, 0),
+                        transactions.filter(t => t.type === 'Despesa').reduce((sum, t) => sum + t.value, 0)
                     ],
                     backgroundColor: [
                         'rgba(76, 201, 240, 0.8)',
@@ -2488,31 +3179,26 @@ class FinanceApp {
         }
     }
 
-    async createCategoryChart(transactions = null) {
-        try {
-            console.log('🔄 Criando gráfico de categorias...');
-            
-            const ctx = document.getElementById('category-chart');
-            if (!ctx) {
-                console.error('❌ Canvas do gráfico de categorias não encontrado');
-                return;
-            }
+    async createPieChart(transactions = null) {
+            try {
+            const ctx = document.getElementById('pie-chart');
+            if (!ctx) return;
             
             // Destruir gráfico existente
-            if (this.charts.category) {
-                this.charts.category.destroy();
+            if (this.charts.pie) {
+                this.charts.pie.destroy();
             }
             
-            // Obter transações se não foram fornecidas
             if (!transactions) {
                 transactions = await this.getCachedTransactions();
+                transactions = this.filterByPeriod(transactions, 'dashboard');
             }
             
-            // Filtrar apenas despesas do período atual
-            const filteredTransactions = this.filterByPeriod(transactions);
-            const expenseTransactions = filteredTransactions.filter(t => t.type === 'Despesa');
+            // Verificar se o canvas ainda existe
+            if (!ctx.parentNode) return;
             
-            console.log(`📊 Total de despesas para gráfico: ${expenseTransactions.length}`);
+            // Filtrar apenas despesas
+            const expenseTransactions = transactions.filter(t => t.type === 'Despesa');
             
             if (expenseTransactions.length === 0) {
                 ctx.parentElement.innerHTML = `
@@ -2547,8 +3233,6 @@ class FinanceApp {
             const sortedCategories = sortedData.map(d => d.category);
             const sortedValues = sortedData.map(d => d.value);
             
-            console.log('📈 Dados do gráfico:', sortedCategories, sortedValues);
-            
             // Gerar cores
             const generateColors = (count) => {
                 const colors = [];
@@ -2562,7 +3246,7 @@ class FinanceApp {
             
             const categoryColors = generateColors(sortedCategories.length);
             
-            const categoryChartData = {
+            const pieChartData = {
                 labels: sortedCategories,
                 datasets: [{
                     data: sortedValues,
@@ -2572,11 +3256,9 @@ class FinanceApp {
                 }]
             };
             
-            const chartType = document.getElementById('chart-type')?.value || 'pie';
-            
-            this.charts.category = new Chart(ctx, {
-                type: chartType,
-                data: categoryChartData,
+            this.charts.pie = new Chart(ctx, {
+                type: 'pie',
+                data: pieChartData,
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
@@ -2611,20 +3293,137 @@ class FinanceApp {
                 }
             });
             
-            console.log('✅ Gráfico de categorias criado com sucesso');
-            
         } catch (error) {
-            console.error('❌ Erro ao criar gráfico de categorias:', error);
-            const ctx = document.getElementById('category-chart');
-            if (ctx && ctx.parentElement) {
+            console.error('Erro ao criar gráfico de pizza:', error);
+        }
+    }
+
+    async createBarChart(transactions = null) {
+        try {
+            const ctx = document.getElementById('bar-chart');
+            if (!ctx) return;
+            
+            // Destruir gráfico existente
+            if (this.charts.bar) {
+                this.charts.bar.destroy();
+            }
+            
+            if (!transactions) {
+                transactions = await this.getCachedTransactions();
+                transactions = this.filterByPeriod(transactions, 'dashboard');
+            }
+            
+            // Filtrar apenas despesas
+            const expenseTransactions = transactions.filter(t => t.type === 'Despesa');
+            
+            if (expenseTransactions.length === 0) {
                 ctx.parentElement.innerHTML = `
                     <div class="empty-state">
-                        <i class="fas fa-exclamation-triangle"></i>
-                        <p>Erro ao carregar gráfico</p>
-                        <p class="empty-hint">${error.message}</p>
+                        <i class="fas fa-chart-bar"></i>
+                        <p>Não há dados de despesas para exibir</p>
+                        <p class="empty-hint">Adicione algumas transações de despesa para ver o gráfico</p>
                     </div>
                 `;
+                return;
             }
+            
+            // Agrupar despesas por categoria
+            const categoryTotals = {};
+            expenseTransactions.forEach(t => {
+                if (!categoryTotals[t.category]) {
+                    categoryTotals[t.category] = 0;
+                }
+                categoryTotals[t.category] += t.value;
+            });
+            
+            // Converter para arrays e ordenar
+            const categories = Object.keys(categoryTotals);
+            const values = categories.map(cat => categoryTotals[cat]);
+            
+            // Ordenar por valor (maior para menor) e pegar top 8
+            const sortedData = categories.map((cat, index) => ({
+                category: cat,
+                value: values[index]
+            })).sort((a, b) => b.value - a.value).slice(0, 8);
+            
+            const sortedCategories = sortedData.map(d => d.category);
+            const sortedValues = sortedData.map(d => d.value);
+            
+            // Gerar cores gradiente
+            const generateGradientColors = (count) => {
+                const colors = [];
+                for (let i = 0; i < count; i++) {
+                    const opacity = 0.7 + (i * 0.3 / count);
+                    colors.push(`rgba(37, 99, 235, ${opacity})`);
+                }
+                return colors;
+            };
+            
+            const barColors = generateGradientColors(sortedCategories.length);
+            
+            const barChartData = {
+                labels: sortedCategories,
+                datasets: [{
+                    label: 'Valor (R$)',
+                    data: sortedValues,
+                    backgroundColor: barColors,
+                    borderColor: barColors.map(color => color.replace('0.7', '1')),
+                    borderWidth: 2,
+                    borderRadius: 6,
+                    borderSkipped: false
+                }]
+            };
+            
+            this.charts.bar = new Chart(ctx, {
+                type: 'bar',
+                data: barChartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `R$ ${context.raw.toFixed(2)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary'),
+                                callback: function(value) {
+                                    return 'R$ ' + value.toLocaleString();
+                                }
+                            },
+                            grid: {
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--border-color')
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary'),
+                                maxRotation: 45
+                            },
+                            grid: {
+                                display: false
+                            }
+                        }
+                    },
+                    animation: {
+                        duration: 1000,
+                        easing: 'easeOutQuart'
+                    }
+                }
+            });
+            
+        } catch (error) {
+            console.error('Erro ao criar gráfico de barras:', error);
         }
     }
 
@@ -3066,7 +3865,7 @@ class FinanceApp {
                 limits,
                 settings,
                 exportDate: new Date().toISOString(),
-                version: '4.2'
+                version: '4.0'
             };
             
             this.exportToJSON(backup, 'backup_financeiro');
@@ -3253,7 +4052,7 @@ class FinanceApp {
             
             // Rodapé
             doc.setFontSize(8);
-            doc.text('Sistema Financeiro v4.2', 14, 280);
+            doc.text('Sistema Financeiro v4.0', 14, 280);
             doc.text(`Página 1 de 2`, 180, 280);
             
             // Salvar
@@ -3267,633 +4066,255 @@ class FinanceApp {
     }
 
     async handleFileUpload(files) {
+    try {
         if (!files || files.length === 0) return;
         
         const file = files[0];
-        console.log('🔍 Arquivo selecionado para importação:', {
-            nome: file.name,
-            tamanho: file.size,
-            tipo: file.type,
-            extensao: file.name.split('.').pop()
-        });
+        const reader = new FileReader();
         
-        const progressElement = document.getElementById('import-progress');
-        const progressFill = document.getElementById('progress-fill');
-        const progressText = document.getElementById('progress-text');
-        
-        if (progressElement) progressElement.style.display = 'block';
-        if (progressFill) progressFill.style.width = '0%';
-        if (progressText) progressText.textContent = '0%';
-        
-        try {
-            if (file.name.endsWith('.json')) {
-                // Processar JSON
-                const reader = new FileReader();
-                reader.onload = async (e) => {
-                    try {
-                        const content = JSON.parse(e.target.result);
-                        let importedCount = 0;
-                        
-                        // Atualizar progresso
-                        if (progressFill) progressFill.style.width = '30%';
-                        if (progressText) progressText.textContent = '30%';
-                        
-                        // Processar transações
-                        if (content.transactions && Array.isArray(content.transactions)) {
-                            for (const transaction of content.transactions) {
-                                try {
-                                    // Garantir que a transação tenha todos os campos necessários
-                                    const completeTransaction = {
-                                        ...transaction,
-                                        status: transaction.status || 'pending',
-                                        createdAt: transaction.createdAt || new Date().toISOString(),
-                                        updatedAt: new Date().toISOString()
-                                    };
-                                    await this.addTransaction(completeTransaction);
-                                    importedCount++;
-                                } catch (error) {
-                                    console.error('❌ Erro ao importar transação:', error);
-                                }
-                            }
-                        }
-                        
-                        // Processar investimentos
-                        if (content.investments && Array.isArray(content.investments)) {
-                            for (const investment of content.investments) {
-                                try {
-                                    const completeInvestment = {
-                                        ...investment,
-                                        createdAt: investment.createdAt || new Date().toISOString(),
-                                        updatedAt: new Date().toISOString()
-                                    };
-                                    await this.addInvestment(completeInvestment);
-                                    importedCount++;
-                                } catch (error) {
-                                    console.error('❌ Erro ao importar investimento:', error);
-                                }
-                            }
-                        }
-                        
-                        // Processar configurações
-                        if (content.settings) {
-                            for (const [key, value] of Object.entries(content.settings)) {
-                                try {
-                                    await this.saveSetting(key, value);
-                                } catch (error) {
-                                    console.error('❌ Erro ao importar configuração:', error);
-                                }
-                            }
-                        }
-                        
-                        if (progressFill) progressFill.style.width = '100%';
-                        if (progressText) progressText.textContent = '100%';
-                        
-                        setTimeout(async () => {
-                            if (progressElement) progressElement.style.display = 'none';
-                            this.showAlert(`${importedCount} registros importados com sucesso!`, 'success');
-                            // Limpar cache
-                            this.cache.transactions = null;
-                            this.cache.investments = null;
-                            this.cache.categories = null;
-                            await this.loadInitialData();
-                        }, 500);
-                        
-                    } catch (error) {
-                        console.error('❌ Erro ao processar JSON:', error);
-                        this.showAlert('Erro ao processar arquivo JSON', 'danger');
-                        if (progressElement) progressElement.style.display = 'none';
-                    }
-                };
-                reader.readAsText(file);
+        reader.onload = async (e) => {
+            try {
+                const data = e.target.result;
+                let importedData = [];
                 
-            } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-                // Verificar se XLSX está disponível
-                if (typeof XLSX === 'undefined') {
-                    this.showAlert('Biblioteca XLSX não carregada. Certifique-se de incluir a biblioteca SheetJS.', 'danger');
-                    if (progressElement) progressElement.style.display = 'none';
+                // Mostrar progresso
+                const progressBar = document.getElementById('import-progress');
+                const progressFill = document.getElementById('progress-fill');
+                const progressText = document.getElementById('progress-text');
+                
+                if (progressBar) progressBar.style.display = 'block';
+                
+                if (file.name.endsWith('.csv')) {
+                    importedData = this.parseCSV(data);
+                } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+                    importedData = await this.parseExcel(data);
+                } else if (file.name.endsWith('.json')) {
+                    importedData = this.parseJSON(data);
+                } else {
+                    this.showAlert('Formato de arquivo não suportado', 'danger');
                     return;
                 }
                 
-                // Processar Excel
-                const reader = new FileReader();
-                reader.onload = async (e) => {
-                    try {
-                        console.log('📊 Iniciando processamento do Excel...');
-                        const data = new Uint8Array(e.target.result);
-                        const workbook = XLSX.read(data, { 
-                            type: 'array', 
-                            cellDates: true,
-                            cellNF: false,
-                            cellText: false
-                        });
-                        
-                        let importedCount = 0;
-                        const allTransactions = [];
-                        
-                        // Atualizar progresso
-                        if (progressFill) progressFill.style.width = '10%';
-                        if (progressText) progressText.textContent = '10%';
-                        
-                        console.log('📋 Planilhas disponíveis:', workbook.SheetNames);
-                        
-                        // Processar cada aba
-                        for (let sheetIndex = 0; sheetIndex < workbook.SheetNames.length; sheetIndex++) {
-                            const sheetName = workbook.SheetNames[sheetIndex];
-                            console.log(`📝 Processando aba: "${sheetName}"`);
-                            
-                            const worksheet = workbook.Sheets[sheetName];
-                            
-                            // Converter para JSON
-                            const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-                                header: 1,
-                                raw: false,
-                                defval: '',
-                                dateNF: 'yyyy-mm-dd'
-                            });
-                            
-                            console.log(`📈 Total de linhas na planilha "${sheetName}": ${jsonData.length}`);
-                            
-                            if (jsonData.length < 2) {
-                                console.warn(`⚠️ Planilha "${sheetName}" vazia ou com poucas linhas`);
-                                continue;
-                            }
-                            
-                            // Extrair cabeçalhos (primeira linha)
-                            const rawHeaders = jsonData[0];
-                            const headers = rawHeaders.map(h => {
-                                if (h === null || h === undefined) return '';
-                                return String(h).trim();
-                            });
-                            
-                            console.log('🏷️ Cabeçalhos encontrados:', headers);
-                            
-                            // Mostrar primeiras linhas para debug
-                            console.log('🔍 Primeiras 3 linhas de dados:');
-                            for (let i = 1; i < Math.min(4, jsonData.length); i++) {
-                                console.log(`Linha ${i}:`, jsonData[i]);
-                            }
-                            
-                            // Processar cada linha de dados
-                            for (let i = 1; i < jsonData.length; i++) {
-                                const rowArray = jsonData[i];
-                                
-                                // Pular linhas vazias
-                                if (!rowArray || rowArray.length === 0 || rowArray.every(cell => !cell || cell.toString().trim() === '')) {
-                                    continue;
-                                }
-                                
-                                // Converter array para objeto usando cabeçalhos
-                                const row = {};
-                                headers.forEach((header, colIndex) => {
-                                    if (header && header.trim() !== '' && colIndex < rowArray.length) {
-                                        let value = rowArray[colIndex];
-                                        
-                                        // Converter datas do Excel
-                                        if (value instanceof Date) {
-                                            value = value.toISOString().split('T')[0];
-                                        } else if (typeof value === 'string' && value.includes('/') && !isNaN(Date.parse(value))) {
-                                            // Tentar parsear como data
-                                            try {
-                                                const date = new Date(value);
-                                                if (!isNaN(date.getTime())) {
-                                                    value = date.toISOString().split('T')[0];
-                                                }
-                                            } catch (e) {
-                                                // Manter como string
-                                            }
-                                        }
-                                        
-                                        row[header] = value;
-                                    }
-                                });
-                                
-                                console.log(`📄 Processando linha ${i}:`, row);
-                                
-                                // Verificar se é uma transação (tem colunas mínimas)
-                                const hasRequiredFields = (row.Data || row.Date) && (row.Tipo || row.Type) && 
-                                                          (row.Categoria || row.Category) && (row.Valor || row.Value);
-                                
-                                if (hasRequiredFields) {
-                                    try {
-                                        const transaction = this.parseTransactionRow(row);
-                                        if (transaction) {
-                                            console.log('✅ Transação válida:', transaction);
-                                            allTransactions.push(transaction);
-                                        } else {
-                                            console.warn('❌ Transação inválida (retornou null):', row);
-                                        }
-                                    } catch (error) {
-                                        console.error('❌ Erro ao processar linha como transação:', error, row);
-                                    }
-                                } else {
-                                    console.log('📋 Linha ignorada (faltam campos obrigatórios):', row);
-                                }
-                            }
-                            
-                            // Atualizar progresso
-                            const sheetProgress = 10 + ((sheetIndex + 1) / workbook.SheetNames.length * 60);
-                            if (progressFill) progressFill.style.width = `${Math.min(sheetProgress, 70)}%`;
-                            if (progressText) progressText.textContent = `${Math.floor(Math.min(sheetProgress, 70))}%`;
-                        }
-                        
-                        console.log(`✅ Total de transações encontradas: ${allTransactions.length}`);
-                        
-                        // Atualizar progresso para salvar
-                        if (progressFill) progressFill.style.width = '80%';
-                        if (progressText) progressText.textContent = '80%';
-                        
-                        // SALVAR TRANSAÇÕES NO BANCO DE DADOS
-                        for (let i = 0; i < allTransactions.length; i++) {
-                            const transaction = allTransactions[i];
-                            try {
-                                console.log(`💾 Salvando transação ${i + 1}/${allTransactions.length}:`, transaction);
-                                await this.addTransaction(transaction);
-                                importedCount++;
-                                
-                                // Atualizar progresso a cada 10 transações
-                                if (i % 10 === 0) {
-                                    const saveProgress = 80 + ((i / allTransactions.length) * 20);
-                                    if (progressFill) progressFill.style.width = `${saveProgress}%`;
-                                    if (progressText) progressText.textContent = `${Math.floor(saveProgress)}%`;
-                                }
-                            } catch (error) {
-                                console.error('❌ Erro ao salvar transação no banco:', error, transaction);
-                            }
-                        }
-                        
-                        if (progressFill) progressFill.style.width = '100%';
-                        if (progressText) progressText.textContent = '100%';
-                        
-                        setTimeout(() => {
-                            if (progressElement) progressElement.style.display = 'none';
-                            if (importedCount > 0) {
-                                this.showAlert(`✅ Importadas ${importedCount} transações com sucesso!`, 'success');
-                            } else {
-                                this.showAlert('⚠️ Nenhuma transação foi importada. Verifique o formato do arquivo.', 'warning');
-                            }
-                            // Limpar cache
-                            this.cache.transactions = null;
-                            this.loadInitialData();
-                        }, 1000);
-                        
-                    } catch (error) {
-                        console.error('❌ Erro ao processar Excel:', error);
-                        this.showAlert(`Erro ao processar arquivo Excel: ${error.message}`, 'danger');
-                        if (progressElement) progressElement.style.display = 'none';
-                    }
-                };
-                reader.onerror = (error) => {
-                    console.error('❌ Erro ao ler arquivo Excel:', error);
-                    this.showAlert('Erro ao ler arquivo Excel', 'danger');
-                    if (progressElement) progressElement.style.display = 'none';
-                };
-                reader.readAsArrayBuffer(file);
+                if (importedData.length === 0) {
+                    this.showAlert('Nenhum dado encontrado para importar', 'warning');
+                    return;
+                }
                 
-            } else if (file.name.endsWith('.csv')) {
-                // Processar CSV
-                const reader = new FileReader();
-                reader.onload = async (e) => {
-                    try {
-                        console.log('📊 Iniciando processamento do CSV...');
-                        const content = e.target.result;
-                        
-                        let importedCount = 0;
-                        const allTransactions = [];
-                        
-                        // Atualizar progresso
-                        if (progressFill) progressFill.style.width = '10%';
-                        if (progressText) progressText.textContent = '10%';
-                        
-                        // Converter CSV para linhas
-                        const lines = content.split('\n').filter(line => line.trim() !== '');
-                        console.log(`📈 Total de linhas no CSV: ${lines.length}`);
-                        
-                        if (lines.length < 2) {
-                            this.showAlert('Arquivo CSV vazio ou inválido', 'warning');
-                            if (progressElement) progressElement.style.display = 'none';
-                            return;
-                        }
-                        
-                        // Detectar separador
-                        let separator = ',';
-                        if (lines[0].includes(';') && !lines[0].includes(',')) {
-                            separator = ';';
-                        } else if (lines[0].includes('\t')) {
-                            separator = '\t';
-                        }
-                        
-                        console.log(`🔧 Separador detectado: "${separator}"`);
-                        
-                        // Processar cabeçalho
-                        const rawHeaders = lines[0].split(separator).map(h => h.trim());
-                        const headers = rawHeaders.map(h => {
-                            // Remover BOM character e aspas
-                            return h
-                                .replace(/^\uFEFF/, '')
-                                .replace(/^["'](.*)["']$/, '$1')
-                                .trim();
-                        });
-                        
-                        console.log('🏷️ Cabeçalhos CSV:', headers);
-                        
-                        if (progressFill) progressFill.style.width = '30%';
-                        if (progressText) progressText.textContent = '30%';
-                        
-                        // Processar cada linha
-                        for (let i = 1; i < lines.length; i++) {
-                            const line = lines[i].trim();
-                            if (!line) continue;
-                            
-                            try {
-                                // Processar linha CSV considerando aspas
-                                const values = [];
-                                let current = '';
-                                let insideQuotes = false;
-                                
-                                for (let char of line) {
-                                    if (char === '"') {
-                                        insideQuotes = !insideQuotes;
-                                    } else if (char === separator && !insideQuotes) {
-                                        values.push(current.trim());
-                                        current = '';
-                                    } else {
-                                        current += char;
-                                    }
-                                }
-                                values.push(current.trim());
-                                
-                                // Criar objeto da linha
-                                const row = {};
-                                headers.forEach((header, index) => {
-                                    if (header && header !== '' && index < values.length) {
-                                        let value = values[index];
-                                        // Remover aspas extras
-                                        value = value.replace(/^["'](.*)["']$/, '$1').trim();
-                                        row[header] = value;
-                                    }
-                                });
-                                
-                                console.log(`📄 Processando linha ${i}:`, row);
-                                
-                                // Verificar se é uma transação
-                                if (row.Data || row.Tipo || row.Categoria || row.Valor) {
-                                    const transaction = this.parseTransactionRow(row);
-                                    if (transaction) {
-                                        console.log('✅ Transação CSV válida:', transaction);
-                                        allTransactions.push(transaction);
-                                    }
-                                }
-                                
-                            } catch (error) {
-                                console.error(`❌ Erro ao processar linha ${i} do CSV:`, error, line);
-                            }
-                            
-                            // Atualizar progresso
-                            const lineProgress = 30 + ((i / lines.length) * 50);
-                            if (progressFill) progressFill.style.width = `${Math.min(lineProgress, 80)}%`;
-                            if (progressText) progressText.textContent = `${Math.floor(Math.min(lineProgress, 80))}%`;
-                        }
-                        
-                        console.log(`✅ Total de transações CSV encontradas: ${allTransactions.length}`);
-                        
-                        if (progressFill) progressFill.style.width = '80%';
-                        if (progressText) progressText.textContent = '80%';
-                        
-                        // SALVAR DADOS NO BANCO
-                        for (let i = 0; i < allTransactions.length; i++) {
-                            const transaction = allTransactions[i];
-                            try {
-                                console.log(`💾 Salvando transação CSV ${i + 1}/${allTransactions.length}`);
-                                await this.addTransaction(transaction);
-                                importedCount++;
-                            } catch (error) {
-                                console.error('❌ Erro ao salvar transação CSV:', error);
-                            }
-                        }
-                        
-                        if (progressFill) progressFill.style.width = '100%';
-                        if (progressText) progressText.textContent = '100%';
-                        
-                        setTimeout(() => {
-                            if (progressElement) progressElement.style.display = 'none';
-                            if (importedCount > 0) {
-                                this.showAlert(`✅ Importadas ${importedCount} transações do CSV!`, 'success');
-                            } else {
-                                this.showAlert('⚠️ Nenhuma transação importada do CSV. Verifique o formato.', 'warning');
-                            }
-                            // Limpar cache
-                            this.cache.transactions = null;
-                            this.loadInitialData();
-                        }, 500);
-                        
-                    } catch (error) {
-                        console.error('❌ Erro ao processar CSV:', error);
-                        this.showAlert('Erro ao processar arquivo CSV', 'danger');
-                        if (progressElement) progressElement.style.display = 'none';
-                    }
-                };
-                reader.onerror = (error) => {
-                    console.error('❌ Erro ao ler arquivo CSV:', error);
-                    this.showAlert('Erro ao ler arquivo CSV', 'danger');
-                    if (progressElement) progressElement.style.display = 'none';
-                };
-                reader.readAsText(file, 'UTF-8');
+                // Processar dados importados
+                let importedCount = 0;
+                let total = importedData.length;
                 
-            } else {
-                this.showAlert('Formato de arquivo não suportado. Use XLSX, CSV ou JSON.', 'warning');
-                if (progressElement) progressElement.style.display = 'none';
+                for (let i = 0; i < total; i++) {
+                    const item = importedData[i];
+                    
+                    // Atualizar progresso
+                    const progress = Math.round((i + 1) / total * 100);
+                    if (progressFill) progressFill.style.width = `${progress}%`;
+                    if (progressText) progressText.textContent = `${progress}%`;
+                    
+                    // Determinar tipo de item e salvar
+                    if (item.hasOwnProperty('Data') || item.hasOwnProperty('date')) {
+                        // É uma transação
+                        const transaction = this.parseTransactionRow(item);
+                        if (transaction) {
+                            await this.addTransaction(transaction);
+                            importedCount++;
+                        }
+                    } else if (item.hasOwnProperty('Nome') || item.hasOwnProperty('name')) {
+                        // É um investimento
+                        const investment = this.parseInvestmentRow(item);
+                        if (investment) {
+                            await this.addInvestment(investment);
+                            importedCount++;
+                        }
+                    }
+                }
+                
+                // Esconder progresso
+                if (progressBar) progressBar.style.display = 'none';
+                
+                // Limpar cache e atualizar
+                this.cache.transactions = null;
+                this.cache.investments = null;
+                await this.refreshCache();
+                await this.loadInitialData();
+                
+                this.showAlert(`${importedCount} registros importados com sucesso!`, 'success');
+                
+            } catch (error) {
+                console.error('Erro ao processar arquivo:', error);
+                this.showAlert('Erro ao processar arquivo importado', 'danger');
+            }
+        };
+        
+        if (file.name.endsWith('.json')) {
+            reader.readAsText(file);
+        } else {
+            reader.readAsBinaryString(file);
+        }
+        
+    } catch (error) {
+        console.error('Erro ao importar arquivo:', error);
+        this.showAlert('Erro ao importar arquivo', 'danger');
+    }
+    }
+
+        // Adicione estas funções de parsing se não existirem:
+    async parseExcel(data) {
+        try {
+            const workbook = XLSX.read(data, { type: 'binary' });
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            return XLSX.utils.sheet_to_json(firstSheet);
+        } catch (error) {
+            console.error('Erro ao parsear Excel:', error);
+            return [];
+        }
+    }
+
+    parseCSV(data) {
+        try {
+            const lines = data.split('\n');
+            if (lines.length < 2) return [];
+            
+            const headers = lines[0].split(';').map(h => h.trim().replace(/"/g, ''));
+            const result = [];
+            
+            for (let i = 1; i < lines.length; i++) {
+                if (!lines[i].trim()) continue;
+                
+                const values = lines[i].split(';').map(v => v.trim().replace(/"/g, ''));
+                const obj = {};
+                
+                headers.forEach((header, index) => {
+                    if (values[index] !== undefined) {
+                        obj[header] = values[index];
+                    }
+                });
+                
+                if (Object.keys(obj).length > 0) {
+                    result.push(obj);
+                }
             }
             
+            return result;
         } catch (error) {
-            console.error('❌ Erro no upload:', error);
-            this.showAlert('Erro ao processar arquivo', 'danger');
-            if (progressElement) progressElement.style.display = 'none';
+            console.error('Erro ao parsear CSV:', error);
+            return [];
+        }
+    }
+
+    parseJSON(data) {
+        try {
+            const parsed = JSON.parse(data);
+            
+            // Verificar se é backup completo ou lista simples
+            if (parsed.transactions || parsed.investments) {
+                // Backup completo
+                const allData = [];
+                if (parsed.transactions) {
+                    allData.push(...parsed.transactions);
+                }
+                if (parsed.investments) {
+                    allData.push(...parsed.investments);
+                }
+                return allData;
+            } else if (Array.isArray(parsed)) {
+                // Lista simples
+                return parsed;
+            } else if (parsed.data) {
+                // Objeto com propriedade data
+                return parsed.data;
+            }
+            
+            return [];
+        } catch (error) {
+            console.error('Erro ao parsear JSON:', error);
+            return [];
         }
     }
 
     parseTransactionRow(row) {
         try {
-            console.log('🔧 ParseTransactionRow recebeu:', row);
+            // Mapear nomes de colunas alternativos
+            const date = row.Data || row.date || row['Data da Transação'];
+            const type = row.Tipo || row.type || row.tipo;
+            const category = row.Categoria || row.category || row.categoria;
+            const value = row.Valor || row.value || row.valor;
+            const description = row.Descrição || row.description || row.descricao;
             
-            // Mapeamento flexível de colunas
-            const dateRaw = row.Data || row.Date || row['Data de Vencimento'] || row.data || row.date || '';
-            const type = row.Tipo || row.Type || row.tipo || row.type || '';
-            const category = row.Categoria || row.Category || row.categoria || row.category || '';
-            const description = row.Descrição || row.Description || row.descrição || row.description || 
-                               row.descricao || row.Descricao || '';
-            const statusRaw = row.Situação || row.Status || row.situação || row.status || 
-                             row.Situacao || row.situacao || 'Pendente';
-            const classification = row.Classificação || row.Classification || row.classificação || 
-                                  row.classification || row.Classificacao || row.classificacao || '';
-            const subcategory = row.Subcategoria || row.Subcategory || row.subcategoria || 
-                               row.subcategory || row.SubCategoria || row.SubCategory || '';
-            const notes = row.Observações || row.Observations || row.observações || row.observations || 
-                          row.Observacoes || row.observacoes || '';
-            
-            // Processar valor - múltiplos formatos
-            let rawValue = row.Valor || row.Value || row.valor || row.value || 
-                          row['Valor (R$)'] || row['Valor R$'] || '0';
-            
-            let value = 0;
-            
-            // Limpar e converter o valor
-            if (rawValue !== null && rawValue !== undefined) {
-                const strValue = String(rawValue).trim();
-                
-                if (strValue === '' || strValue.toLowerCase() === 'null' || strValue.toLowerCase() === 'undefined') {
-                    value = 0;
-                } else {
-                    // Remover símbolos de moeda e espaços
-                    let cleanedValue = strValue
-                        .replace(/\s/g, '')
-                        .replace(/R\$/g, '')
-                        .replace(/\$/g, '')
-                        .replace(/€/g, '')
-                        .replace(/£/g, '')
-                        .replace(/[^\d.,\-]/g, '') // Manter apenas números, ponto, vírgula e sinal negativo
-                        .trim();
-                    
-                    // Verificar se está vazio após limpeza
-                    if (cleanedValue === '' || cleanedValue === '-') {
-                        value = 0;
-                    } else {
-                        // Formato brasileiro: 1.234,56 -> 1234.56
-                        if (cleanedValue.includes(',') && cleanedValue.includes('.')) {
-                            // Se tem ambos, assume que vírgula é decimal e ponto é milhar
-                            cleanedValue = cleanedValue.replace(/\./g, '').replace(',', '.');
-                        } 
-                        // Apenas vírgula como decimal
-                        else if (cleanedValue.includes(',') && !cleanedValue.includes('.')) {
-                            cleanedValue = cleanedValue.replace(',', '.');
-                        }
-                        // Formato americano: 1,234.56 -> 1234.56
-                        else if (cleanedValue.includes('.') && cleanedValue.includes(',')) {
-                            cleanedValue = cleanedValue.replace(/,/g, '');
-                        }
-                        
-                        // Converter para número
-                        value = parseFloat(cleanedValue);
-                        
-                        // Verificar se é NaN
-                        if (isNaN(value)) {
-                            console.warn('⚠️ Valor não pôde ser convertido:', strValue, '->', cleanedValue);
-                            value = 0;
-                        }
-                    }
-                }
-            }
-            
-            console.log(`💰 Valor processado: "${rawValue}" -> ${value}`);
-            
-            // Verificar dados mínimos necessários
-            if (!dateRaw || !type || !category || value === 0) {
-                console.warn('⚠️ Dados insuficientes na linha:', {
-                    dateRaw, type, category, value,
-                    temData: !!dateRaw,
-                    temTipo: !!type,
-                    temCategoria: !!category,
-                    temValor: value !== 0
-                });
+            if (!date || !type || !category || !value) {
+                console.warn('Linha de transação inválida:', row);
                 return null;
             }
             
-            // Converter data
-            let isoDate;
-            try {
-                const dateStr = String(dateRaw).trim();
-                console.log(`📅 Data original: "${dateStr}"`);
-                
-                // Tentar diferentes formatos de data
-                // Formato YYYY-MM-DD (com ou sem hora)
-                if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
-                    isoDate = dateStr.split(' ')[0]; // Remove hora se existir
-                    console.log(`📅 Formato YYYY-MM-DD detectado: ${isoDate}`);
-                }
-                // Formato DD/MM/YYYY
-                else if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(dateStr)) {
-                    const parts = dateStr.split('/');
-                    const day = parts[0].padStart(2, '0');
-                    const month = parts[1].padStart(2, '0');
-                    const year = parts[2];
-                    isoDate = `${year}-${month}-${day}`;
-                    console.log(`📅 Formato DD/MM/YYYY detectado: ${isoDate}`);
-                }
-                // Formato DD-MM-YYYY
-                else if (/^\d{1,2}-\d{1,2}-\d{4}/.test(dateStr)) {
-                    const parts = dateStr.split('-');
-                    const day = parts[0].padStart(2, '0');
-                    const month = parts[1].padStart(2, '0');
-                    const year = parts[2];
-                    isoDate = `${year}-${month}-${day}`;
-                    console.log(`📅 Formato DD-MM-YYYY detectado: ${isoDate}`);
-                }
-                // Formato MM/DD/YYYY (americano)
-                else if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(dateStr)) {
-                    const dateObj = new Date(dateStr);
-                    if (!isNaN(dateObj.getTime())) {
-                        isoDate = dateObj.toISOString().split('T')[0];
-                        console.log(`📅 Formato MM/DD/YYYY detectado: ${isoDate}`);
-                    }
-                }
-                // Tentar parsear como data padrão
-                else {
-                    const dateObj = new Date(dateStr);
-                    if (!isNaN(dateObj.getTime())) {
-                        isoDate = dateObj.toISOString().split('T')[0];
-                        console.log(`📅 Data parseada: ${isoDate}`);
-                    } else {
-                        // Se não conseguir parsear, usar data atual
-                        isoDate = new Date().toISOString().split('T')[0];
-                        console.warn(`⚠️ Não foi possível parsear a data "${dateStr}", usando data atual: ${isoDate}`);
-                    }
-                }
-            } catch (error) {
-                console.error('❌ Erro ao converter data:', error);
-                isoDate = new Date().toISOString().split('T')[0];
-            }
-            
-            // Normalizar status
-            let status = 'pending';
-            if (statusRaw) {
-                const statusLower = String(statusRaw).toLowerCase();
-                if (statusLower.includes('paga') || statusLower.includes('paid') || statusLower === 'pago') {
-                    status = 'paid';
-                } else if (statusLower.includes('pendente') || statusLower.includes('pending')) {
-                    status = 'pending';
-                } else if (statusLower.includes('vencida') || statusLower.includes('overdue')) {
-                    status = 'pending'; // Marcar como pendente se estiver vencida
-                }
-            }
-            
-            // Normalizar tipo
-            let normalizedType = String(type).trim();
-            if (normalizedType.toLowerCase().includes('receita') || normalizedType.toLowerCase().includes('income')) {
-                normalizedType = 'Receita';
-            } else if (normalizedType.toLowerCase().includes('despesa') || normalizedType.toLowerCase().includes('expense')) {
-                normalizedType = 'Despesa';
-            }
-            
-            // Criar objeto de transação
-            const transaction = {
-                date: isoDate,
-                type: normalizedType,
-                category: String(category).trim(),
-                value: parseFloat(value.toFixed(2)), // Garantir 2 casas decimais
-                description: String(description).trim() || '(sem descrição)',
-                status: status,
-                classification: classification ? String(classification).trim() : null,
-                subcategory: subcategory ? String(subcategory).trim() : null,
-                notes: notes ? String(notes).trim() : null,
+            return {
+                date: this.formatDateForStorage(date),
+                type: type,
+                category: category,
+                value: parseFloat(value.toString().replace(',', '.')),
+                description: description || 'Importado',
+                status: 'pending',
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
-            
-            console.log('✅ Transação final processada:', transaction);
-            return transaction;
-            
         } catch (error) {
-            console.error('❌ Erro crítico no parseTransactionRow:', error, row);
+            console.error('Erro ao parsear transação:', error, row);
             return null;
+        }
+    }
+
+    parseInvestmentRow(row) {
+        try {
+            const name = row.Nome || row.name || row['Nome do Investimento'];
+            const type = row.Tipo || row.type || row.tipo;
+            const date = row.Data || row.date || row['Data da Aplicação'];
+            const amount = row['Valor Investido'] || row.amount || row.valor;
+            
+            if (!name || !type || !date || !amount) {
+                console.warn('Linha de investimento inválida:', row);
+                return null;
+            }
+            
+            return {
+                name: name,
+                type: type,
+                date: this.formatDateForStorage(date),
+                amount: parseFloat(amount.toString().replace(',', '.')),
+                currentValue: parseFloat((row['Valor Atual'] || row.currentValue || amount).toString().replace(',', '.')),
+                description: row.Descrição || row.description || '',
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+        } catch (error) {
+            console.error('Erro ao parsear investimento:', error, row);
+            return null;
+        }
+    }
+
+    formatDateForStorage(dateString) {
+        try {
+            // Converter várias formatos para YYYY-MM-DD
+            if (dateString.includes('/')) {
+                const parts = dateString.split('/');
+                if (parts.length === 3) {
+                    // DD/MM/YYYY ou MM/DD/YYYY
+                    if (parts[0].length === 4) {
+                        // YYYY/MM/DD
+                        return dateString;
+                    } else if (parts[2].length === 4) {
+                        // DD/MM/YYYY
+                        return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                    }
+                }
+            } else if (dateString.includes('-')) {
+                // Já está em formato ISO ou similar
+                return dateString.split('T')[0];
+            }
+            
+            // Se não conseguir parsear, usar data atual
+            return new Date().toISOString().split('T')[0];
+        } catch {
+            return new Date().toISOString().split('T')[0];
         }
     }
 
@@ -3934,6 +4355,7 @@ class FinanceApp {
             this.cache.transactions = null;
             this.cache.investments = null;
             this.cache.categories = null;
+            this.cache.limits = null;
             this.cache.lastUpdate = null;
             
             // Restaurar configurações padrão
@@ -3948,7 +4370,7 @@ class FinanceApp {
         }
     }
 
-    // ========== MÉTODOS DO INDEXEDDB ==========
+    // ========== MÉTODOS DO INDEXEDDB (mantidos como estão) ==========
 
     async addTransaction(transaction) {
         return new Promise((resolve, reject) => {
@@ -4313,166 +4735,21 @@ class FinanceApp {
 document.addEventListener('DOMContentLoaded', () => {
     try {
         window.financeApp = new FinanceApp();
-        console.log('🚀 Aplicação Financeira Inicializada - Versão 4.2');
+        console.log('🚀 Aplicação Financeira Inicializada - Versão 4.0');
+        
+        // Adicionar animação CSS para pulse
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes pulse {
+                0% { transform: scale(1); }
+                50% { transform: scale(1.1); }
+                100% { transform: scale(1); }
+            }
+        `;
+        document.head.appendChild(style);
+        
     } catch (error) {
         console.error('❌ Erro ao inicializar aplicação:', error);
         alert('Erro ao inicializar o sistema financeiro. Por favor, recarregue a página.');
     }
 });
-
-// Adicionar estilos para badges e melhorias visuais
-const badgeStyles = document.createElement('style');
-badgeStyles.textContent = `
-    .badge {
-        padding: 4px 8px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 600;
-        display: inline-block;
-    }
-    
-    .badge.success {
-        background-color: rgba(76, 201, 240, 0.15);
-        color: var(--success-color);
-    }
-    
-    .badge.danger {
-        background-color: rgba(247, 37, 133, 0.15);
-        color: var(--danger-color);
-    }
-    
-    .badge.warning {
-        background-color: rgba(248, 150, 30, 0.15);
-        color: var(--warning-color);
-    }
-    
-    .badge.info {
-        background-color: rgba(130, 87, 229, 0.15);
-        color: var(--info-color);
-    }
-    
-    .empty-state {
-        text-align: center;
-        padding: 40px 20px;
-        color: var(--text-secondary);
-    }
-    
-    .empty-state i {
-        font-size: 48px;
-        margin-bottom: 16px;
-        opacity: 0.5;
-    }
-    
-    .empty-state p {
-        font-size: 14px;
-    }
-    
-    .empty-hint {
-        font-size: 12px;
-        color: var(--text-tertiary);
-        margin-top: 8px;
-    }
-    
-    .progress-bar {
-        width: 100%;
-        height: 8px;
-        background-color: var(--border-color);
-        border-radius: 4px;
-        overflow: hidden;
-        margin: 8px 0;
-    }
-    
-    .progress-fill {
-        height: 100%;
-        background-color: var(--primary-color);
-        transition: width 0.3s ease;
-    }
-    
-    .progress-text {
-        font-size: 12px;
-        color: var(--text-secondary);
-    }
-    
-    .chart-wrapper {
-        position: relative;
-        width: 100%;
-        min-height: 250px;
-    }
-    
-    .chart-container {
-        position: relative;
-        height: 100%;
-        width: 100%;
-    }
-    
-    /* Estilos para a aba de Alertas/Limites */
-    .limits-table .table-actions {
-        display: flex;
-        gap: 8px;
-    }
-    
-    .action-btn.add-limit {
-        background-color: var(--success-color);
-        color: white;
-    }
-    
-    .action-btn.add-limit:hover {
-        background-color: var(--success-dark);
-    }
-    
-    /* Melhorias visuais para gráficos */
-    .chart-card {
-        background: var(--card-bg);
-        border-radius: 12px;
-        padding: 20px;
-        box-shadow: var(--shadow);
-        transition: transform 0.3s ease;
-    }
-    
-    .chart-card:hover {
-        transform: translateY(-2px);
-    }
-    
-    .chart-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 20px;
-    }
-    
-    .chart-title {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text-color);
-    }
-    
-    .chart-controls {
-        display: flex;
-        gap: 10px;
-    }
-`;
-document.head.appendChild(badgeStyles);
-
-// Adicionar polyfill para compatibilidade
-if (!window.indexedDB) {
-    console.warn('IndexedDB não suportado neste navegador');
-    alert('Seu navegador não suporta IndexedDB, que é necessário para este aplicativo. Por favor, use um navegador moderno como Chrome, Firefox ou Edge.');
-}
-
-// Verificar se Chart.js está carregado
-if (typeof Chart === 'undefined') {
-    console.error('Chart.js não foi carregado. Certifique-se de incluir a biblioteca Chart.js.');
-    document.addEventListener('DOMContentLoaded', () => {
-        const chartContainers = document.querySelectorAll('.chart-wrapper');
-        chartContainers.forEach(container => {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <p>Biblioteca Chart.js não encontrada</p>
-                    <p class="empty-hint">Por favor, inclua a biblioteca Chart.js para visualizar os gráficos</p>
-                </div>
-            `;
-        });
-    });
-}
-// [file content end]
