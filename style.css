@@ -2702,3 +2702,51 @@ canvas {
     max-height: 100% !important;
     height: auto !important;
 }
+
+/* Cores para os valores dos cards do dashboard */
+
+/* Receita - Azul claro (positivo) */
+#total-income {
+    color: #4cc9f0 !important; /* Azul claro - mesma cor do ícone de receita/seta para cima */
+}
+
+/* Despesa - Rosa/vermelho (negativo) */
+#total-expense {
+    color: #f72585 !important; /* Rosa/vermelho - mesma cor do ícone de despesa/seta para baixo */
+}
+
+/* Saldo - Verde (positivo) ou Vermelho (negativo) dinâmico */
+#current-balance {
+    /* A cor será dinâmica via JavaScript baseada no valor */
+    transition: color 0.3s ease;
+}
+
+/* Investimentos - Laranja/dourado (neutro/positivo) */
+#total-investment {
+    color: #ff9e00 !important; /* Laranja/dourado - mesma cor do ícone de gráfico/investimento */
+}
+
+/* Adicionar classes para saldo positivo/negativo */
+.balance-positive {
+    color: #06d6a0 !important; /* Verde para saldo positivo */
+}
+
+.balance-negative {
+    color: #f72585 !important; /* Vermelho/rosa para saldo negativo */
+}
+
+/* Opcional: Adicionar estilo para valores em cards */
+.card .card-value {
+    font-weight: 700;
+    font-size: 28px;
+    margin: 8px 0;
+}
+
+/* Para tornar os valores mais destacados */
+#total-income,
+#total-expense,
+#current-balance,
+#total-investment {
+    font-weight: 800;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
