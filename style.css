@@ -2960,6 +2960,17 @@ canvas {
     gap: 8px;
 }
 
+.empty-state.error {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+.empty-state.error .fa-exclamation-triangle {
+    color: var(--danger-color);
+    font-size: 2.5rem;
+    margin-bottom: 10px;
+}
+
 /* Ajuste para responsividade */
 @media (max-width: 768px) {
     .btn-icon {
