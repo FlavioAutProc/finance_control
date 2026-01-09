@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -14,6 +15,7 @@
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
 </head>
+
 <body>
     <div class="container">
         <!-- Overlay para mobile -->
@@ -28,7 +30,7 @@
                     <i class="fas fa-times"></i>
                 </button>
             </div>
-            
+
             <nav class="menu">
                 <ul>
                     <li class="active" data-section="dashboard">
@@ -61,7 +63,7 @@
                     </li>
                 </ul>
             </nav>
-            
+
             <div class="sidebar-footer">
                 <div class="theme-toggle">
                     <i class="fas fa-moon"></i>
@@ -321,13 +323,13 @@
                         <table id="transactions-table">
                             <thead>
                                 <tr>
+                                    <th>Ações</th>
                                     <th>Data</th>
                                     <th>Tipo</th>
                                     <th>Categoria</th>
                                     <th>Valor (R$)</th>
                                     <th>Descrição</th>
                                     <th>Situação</th>
-                                    <th>Ações</th>
                                 </tr>
                             </thead>
                             <tbody id="transactions-body">
@@ -697,7 +699,7 @@
                     <div class="section-header">
                         <h2>Nova Transação</h2>
                     </div>
-                    
+
                     <div class="transaction-form-container card">
                         <form id="transaction-form">
                             <div class="form-row">
@@ -724,7 +726,7 @@
                                     </select>
                                 </div>
                             </div>
-                            
+
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="transaction-value">
@@ -747,21 +749,21 @@
                                     </select>
                                 </div>
                             </div>
-                            
+
                             <div class="form-group">
                                 <label for="transaction-description">
                                     <i class="fas fa-align-left"></i> Descrição Detalhada *
                                 </label>
                                 <textarea id="transaction-description" rows="3" required></textarea>
                             </div>
-                            
+
                             <div class="form-group">
                                 <label for="transaction-notes">
                                     <i class="fas fa-sticky-note"></i> Observações
                                 </label>
                                 <textarea id="transaction-notes" rows="2"></textarea>
                             </div>
-                            
+
                             <div class="form-actions">
                                 <button type="reset" class="btn btn-secondary">
                                     <i class="fas fa-times"></i> Limpar
@@ -874,4 +876,5 @@
 
     <script src="app.js"></script>
 </body>
+
 </html>
